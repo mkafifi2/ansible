@@ -1,0 +1,17 @@
+---
+- name: check host name
+  hosts: all
+  tasks:
+    - name: check hostname
+      command: "/bin/hostname"
+      register: host_name
+    
+    - debug:
+        msg: "Hostname: {{ host_name.stdout }}"
+
+    - name: Check if host need reboot
+      command: "/usr/bin/needs-restarting"
+      register: need_reboot
+
+    - debug:
+        msg: "Server need reboot {{need_reboot.rc }}"
