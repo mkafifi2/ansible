@@ -1,0 +1,4 @@
+- name: Include tasks with params
+  ansible.builtin.include_tasks: inner.yml
+  vars:
+    app_val: "include_param"          # Level 21: include_tasks params (WINNER)
