@@ -1,0 +1,38 @@
+- hosts: localhost
+  gather_facts: true                  # Level 10: host facts (ansible_facts)
+  
+  vars:
+    app_val: "play_var"               # Level 11: play vars
+
+  vars_prompt:
+    - name: app_val
+      prompt: "Enter value"           # Level 12: play vars_prompt
+      private: no
+
+  vars_files:
+    - external_vars.yml               # Level 13: play vars_files
+
+  tasks:
+    - name: Pre-task work
+      ansible.builtin.include_vars:
+        file: secret_vars.yml         # Level 17: include_vars
+
+    - name: Set a fact
+      ansible.builtin.set_fact:
+        app_val: "fact_var"           # Level 18: set_facts / registered
+
+    - name: Start a block
+      vars:
+        app_val: "block_var"          # Level 15: block vars
+      block:
+        - name: Run task with specific var
+          ansible.builtin.debug:
+            msg: "Current value is {{ app_val }}"
+          vars:
+            app_val: "task_var"       # Level 16: task vars
+
+        - name: Include a role
+          ansible.builtin.include_role:
+            name: my_role
+          vars:
+            app_val: "role_param"     # Level 20: include_role params
