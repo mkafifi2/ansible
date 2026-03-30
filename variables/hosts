@@ -1,0 +1,15 @@
+# [Level 3, 4, 5, 8] - /etc/ansible/hosts (Inventory File)
+[web]
+localhost app_val=inventory_host_var  # Level 8: inventory host_vars
+
+[web:vars]
+app_val=inventory_group_var           # Level 5: inventory group_vars
+
+[all:vars]
+app_val=inventory_all_var             # Level 4: inventory group_vars (all)
+
+# [Level 6, 7] - group_vars/all.yml and group_vars/web.yml (Next to Playbook)
+app_val: "playbook_group_var"         # Level 7: playbook group_vars
+
+# [Level 9] - host_vars/localhost.yml (Next to Playbook)
+app_val: "playbook_host_var"          # Level 9: playbook host_vars
