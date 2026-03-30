@@ -1,0 +1,5 @@
+# [Level 2] - roles/main.yml
+app_val: "role_default"               # Level 2: role defaults
+
+# [Level 14] - roles/my_role/vars/main.yml
+app_val: "role_vars"                  # Level 14: role vars
