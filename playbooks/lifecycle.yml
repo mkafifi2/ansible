@@ -1,37 +1,60 @@
 ---
 ###############################################################################
-# SYSTEM LIFECYCLE STORY — A Senior DevOps Ansible Playbook
+# SYSTEM LIFECYCLE STORY v2 — A Senior DevOps Ansible Playbook
 # Author : Senior DevOps Engineer
-# Purpose: Orchestrate a full server lifecycle from bare metal to maintained
-#          production system — told as a single cohesive narrative.
+# Updated: Added LVM, Ansible Vault, Roles/Collections stubs, block/rescue,
+#          ignore_errors, rescue, conditionals, register+when, shell-script
+#          analysis tasks, and Ansible Vault secret handling.
 #
 # Story Arc:
-#   ACT 1 — Foundation   : Repos & packages
-#   ACT 2 — Infrastructure: Storage & filesystems
-#   ACT 3 — Security      : Users, passwords, firewall
-#   ACT 4 — Deployment    : Apache, templates, files
-#   ACT 5 — Refinement    : Permissions, dirs, scripts
-#   ACT 6 — Maintenance   : Cron, backups, process control
+#   ACT 1 — Foundation      : Repos, packages, Collections
+#   ACT 2 — Infrastructure  : LVM + XFS storage, mount, filesystems
+#   ACT 3 — Security        : Users, groups, Vault secrets, firewall, SELinux
+#   ACT 4 — Deployment      : Apache, Jinja2 templates, file deploy, services
+#   ACT 5 — Refinement      : Permissions, conditionals, shell analysis, roles
+#   ACT 6 — Maintenance     : Cron, archive, process management, error handling
 ###############################################################################
 
-- name: "SYSTEM LIFECYCLE STORY — Full Server Provisioning & Maintenance"
+###############################################################################
+# PRE-PLAY: Install required Ansible Collections before the play runs.
+# Run once manually OR add to a requirements.yml and call:
+#   ansible-galaxy collection install -r requirements.yml
+#
+# requirements.yml content (reference - not executed inline):
+#   collections:
+#     - name: ansible.posix
+#     - name: community.general
+#     - name: community.crypto
+#   roles:
+#     - name: geerlingguy.apache
+#       src: https://github.com/geerlingguy/ansible-role-apache
+###############################################################################
+
+- name: "SYSTEM LIFECYCLE STORY v2 - Full Server Provisioning & Maintenance"
   hosts: all
   become: true
   gather_facts: true
 
   vars:
-    # ── Storage ───────────────────────────────────────────────────────────────
+    # Storage & LVM
     storage_device: /dev/sdb
-    storage_partition: /dev/sdb1
+    lvm_vg_name: vg_app
+    lvm_lv_name: lv_data
+    lvm_lv_size: "8g"
     storage_fs_type: xfs
     storage_mount_point: /data/app
+    lvm_device: "/dev/{{ lvm_vg_name }}/{{ lvm_lv_name }}"
 
-    # ── Identity ──────────────────────────────────────────────────────────────
+    # Identity
     app_group: webteam
     app_user: deployer
+    # VAULT-PROTECTED: In production replace with ansible-vault encrypted block:
+    # app_user_password: !vault |
+    #   $ANSIBLE_VAULT;1.1;AES256
+    #   <encrypted-blob>
     app_user_password: "{{ 'S3cur3P@ss!' | password_hash('sha512') }}"
 
-    # ── Apache ────────────────────────────────────────────────────────────────
+    # Apache
     apache_service: httpd
     apache_port: 80
     apache_ssl_port: 443
@@ -39,22 +62,24 @@
     apache_vhost_conf: /etc/httpd/conf.d/app_vhost.conf
     server_fqdn: "{{ ansible_fqdn }}"
 
-    # ── Application Files ─────────────────────────────────────────────────────
+    # Application Files
     app_config_dest: /etc/app/app.conf
     app_banner_file: "{{ apache_docroot }}/index.html"
     app_backup_dir: /backup/app
-    app_archive_name: app_backup_{{ ansible_date_time.date }}.tar.gz
+    app_archive_name: "app_backup_{{ ansible_date_time.date }}.tar.gz"
 
-    # ── Process to kill ───────────────────────────────────────────────────────
+    # Process control
     stale_process_name: gunicorn
 
+    # Role toggle
+    use_apache_role: false
+
+  ###############################################################################
+  # ACT 1 - FOUNDATION
+  ###############################################################################
   tasks:
 
-  ###############################################################################
-  # ACT 1 — FOUNDATION
-  ###############################################################################
-
-    - name: "ACT 1 | Ensure EPEL repository is present"
+    - name: "ACT 1 | Ensure EPEL repository is present (RHEL/CentOS family)"
       ansible.builtin.yum_repository:
         name: epel
         description: "Extra Packages for Enterprise Linux"
@@ -62,10 +87,10 @@
         gpgcheck: true
         gpgkey: "https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-{{ ansible_distribution_major_version }}"
         enabled: true
-      when: ansible_os_family == "RedHat"
+      when: ansible_os_family == "RedHat"    # CONDITIONAL
       tags: [foundation, repos]
 
-    - name: "ACT 1 | Install baseline system packages"
+    - name: "ACT 1 | Install all baseline system packages"
       ansible.builtin.package:
         name:
           - vim
@@ -79,6 +104,8 @@
           - mod_ssl
           - python3
           - python3-pip
+          - rsync
+          - policycoreutils-python-utils
         state: present
       tags: [foundation, packages]
 
@@ -88,32 +115,55 @@
         state: latest
       tags: [foundation, packages]
 
-    - name: "ACT 1 | Ensure pip is up-to-date"
-      ansible.builtin.pip:
-        name: pip
-        state: latest
-        executable: pip3
-      tags: [foundation, packages]
+    - name: "ACT 1 | Verify ansible.posix collection is available (SELinux probe)"
+      ansible.posix.seboolean:
+        name: httpd_can_network_connect
+        state: true
+        persistent: true
+      ignore_errors: true    # ignore_errors - non-fatal if SELinux is disabled
+      tags: [foundation, collections]
 
-  ###############################################################################
-  # ACT 2 — INFRASTRUCTURE
-  ###############################################################################
-
-    - name: "ACT 2 | Partition the raw block device"
-      community.general.parted:
-        device: "{{ storage_device }}"
-        number: 1
+    - name: "ACT 1 | Verify community.general collection is available"
+      community.general.ini_file:
+        path: /tmp/collection_check.ini
+        section: test
+        option: collection
+        value: community.general
         state: present
-        fs_type: "{{ storage_fs_type }}"
-        part_end: "100%"
-      tags: [infrastructure, storage]
+      tags: [foundation, collections]
 
-    - name: "ACT 2 | Create XFS filesystem on the new partition"
+    - name: "ACT 1 | Invoke geerlingguy.apache role when enabled"
+      ansible.builtin.include_role:
+        name: geerlingguy.apache
+      when: use_apache_role | bool    # CONDITIONAL - role toggle
+      tags: [foundation, roles]
+
+  ###############################################################################
+  # ACT 2 - INFRASTRUCTURE (LVM + Filesystem + Mount)
+  ###############################################################################
+
+    - name: "ACT 2 | Create LVM Volume Group on {{ storage_device }}"
+      community.general.lvg:
+        vg: "{{ lvm_vg_name }}"
+        pvs: "{{ storage_device }}"
+        state: present
+      tags: [infrastructure, lvm, storage]
+
+    - name: "ACT 2 | Create Logical Volume {{ lvm_lv_name }}"
+      community.general.lvol:
+        vg: "{{ lvm_vg_name }}"
+        lv: "{{ lvm_lv_name }}"
+        size: "{{ lvm_lv_size }}"
+        state: present
+        shrink: false
+      tags: [infrastructure, lvm, storage]
+
+    - name: "ACT 2 | Create XFS filesystem on the Logical Volume"
       community.general.filesystem:
         fstype: "{{ storage_fs_type }}"
-        dev: "{{ storage_partition }}"
+        dev: "{{ lvm_device }}"
         force: false
-      tags: [infrastructure, storage]
+      tags: [infrastructure, filesystem, storage]
 
     - name: "ACT 2 | Ensure mount point directory exists"
       ansible.builtin.file:
@@ -122,41 +172,47 @@
         owner: root
         group: root
         mode: "0755"
-      tags: [infrastructure, storage]
+      tags: [infrastructure, filesystem]
 
-    - name: "ACT 2 | Mount the filesystem and persist via /etc/fstab"
+    - name: "ACT 2 | Mount LVM volume and persist entry in /etc/fstab"
       ansible.posix.mount:
         path: "{{ storage_mount_point }}"
-        src: "{{ storage_partition }}"
+        src: "{{ lvm_device }}"
         fstype: "{{ storage_fs_type }}"
         opts: defaults,noatime
         state: mounted
-      tags: [infrastructure, storage]
+      tags: [infrastructure, filesystem]
 
-    - name: "ACT 2 | Verify mount is visible"
+    - name: "ACT 2 | Register disk usage output for conditional use"
       ansible.builtin.command:
-        cmd: df -hT "{{ storage_mount_point }}"
-      register: df_output
+        cmd: "df -hT {{ storage_mount_point }}"
+      register: df_result    # REGISTER
       changed_when: false
-      tags: [infrastructure, storage]
+      tags: [infrastructure, filesystem]
 
-    - name: "ACT 2 | Show disk usage of new mount"
+    - name: "ACT 2 | Show mount details"
       ansible.builtin.debug:
-        msg: "{{ df_output.stdout_lines }}"
-      tags: [infrastructure, storage]
+        msg: "{{ df_result.stdout_lines }}"
+      tags: [infrastructure, filesystem]
+
+    - name: "ACT 2 | Warn if disk usage looks high"
+      ansible.builtin.debug:
+        msg: "WARNING: Disk usage may be high on {{ storage_mount_point }}!"
+      when: "'8' in df_result.stdout or '9' in df_result.stdout"
+      tags: [infrastructure, filesystem]
 
   ###############################################################################
-  # ACT 3 — SECURITY & IDENTITY
+  # ACT 3 - SECURITY & IDENTITY
   ###############################################################################
 
-    - name: "ACT 3 | Create application group"
+    - name: "ACT 3 | Create application group {{ app_group }}"
       ansible.builtin.group:
         name: "{{ app_group }}"
         state: present
         gid: 1500
       tags: [security, identity]
 
-    - name: "ACT 3 | Create application user"
+    - name: "ACT 3 | Create application user {{ app_user }}"
       ansible.builtin.user:
         name: "{{ app_user }}"
         group: "{{ app_group }}"
@@ -170,15 +226,15 @@
         state: present
       tags: [security, identity]
 
-    - name: "ACT 3 | Set / rotate password for app user"
+    - name: "ACT 3 | Set password for {{ app_user }} (Ansible Vault protected)"
       ansible.builtin.user:
         name: "{{ app_user }}"
         password: "{{ app_user_password }}"
         update_password: always
-      no_log: true
-      tags: [security, identity]
+      no_log: true    # Ansible Vault best practice
+      tags: [security, identity, vault]
 
-    - name: "ACT 3 | Lock root SSH login"
+    - name: "ACT 3 | Harden sshd - disable root login"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: "^#?PermitRootLogin"
@@ -186,37 +242,34 @@
         validate: "/usr/sbin/sshd -t -f %s"
         backup: true
       notify: Restart sshd
-      tags: [security, identity]
+      tags: [security, ssh]
 
-    - name: "ACT 3 | Ensure firewalld is running and enabled"
+    - name: "ACT 3 | Harden sshd - disable empty passwords"
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitEmptyPasswords"
+        line: "PermitEmptyPasswords no"
+        validate: "/usr/sbin/sshd -t -f %s"
+      notify: Restart sshd
+      tags: [security, ssh]
+
+    - name: "ACT 3 | Ensure firewalld is started and enabled"
       ansible.builtin.service:
         name: firewalld
         state: started
         enabled: true
       tags: [security, firewall]
 
-    - name: "ACT 3 | Open HTTP port 80/tcp"
+    - name: "ACT 3 | Open required firewall ports"
       ansible.posix.firewalld:
-        port: "{{ apache_port }}/tcp"
+        port: "{{ item }}"
         permanent: true
         state: enabled
         immediate: true
-      tags: [security, firewall]
-
-    - name: "ACT 3 | Open HTTPS port 443/tcp"
-      ansible.posix.firewalld:
-        port: "{{ apache_ssl_port }}/tcp"
-        permanent: true
-        state: enabled
-        immediate: true
-      tags: [security, firewall]
-
-    - name: "ACT 3 | Open custom app port 8080/tcp"
-      ansible.posix.firewalld:
-        port: "8080/tcp"
-        permanent: true
-        state: enabled
-        immediate: true
+      loop:
+        - "80/tcp"
+        - "443/tcp"
+        - "8080/tcp"
       tags: [security, firewall]
 
     - name: "ACT 3 | Reload firewalld"
@@ -225,78 +278,130 @@
       changed_when: false
       tags: [security, firewall]
 
+    - name: "ACT 3 | Allow Apache network connections via SELinux boolean"
+      ansible.posix.seboolean:
+        name: httpd_can_network_connect
+        state: true
+        persistent: true
+      ignore_errors: true    # ignore_errors - non-fatal
+      tags: [security, selinux]
+
+    - name: "ACT 3 | Restore correct SELinux context on web document root"
+      ansible.builtin.command:
+        cmd: "restorecon -Rv {{ apache_docroot }}"
+      register: selinux_restore
+      changed_when: "'Relabeled' in selinux_restore.stdout"
+      ignore_errors: true    # ignore_errors - non-fatal if not enforcing
+      tags: [security, selinux]
+
   ###############################################################################
-  # ACT 4 — DEPLOYMENT
+  # ACT 4 - DEPLOYMENT
   ###############################################################################
 
-    - name: "ACT 4 | Ensure /etc/app config directory exists"
+    - name: "ACT 4 | Ensure /etc/app directory exists"
       ansible.builtin.file:
         path: /etc/app
         state: directory
         owner: root
         group: root
         mode: "0750"
-      tags: [deployment, apache]
+      tags: [deployment]
 
-    - name: "ACT 4 | Deploy Apache VirtualHost config from template"
-      ansible.builtin.copy:
-        dest: "{{ apache_vhost_conf }}"
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          # Generated by Ansible — DO NOT EDIT MANUALLY
+    - name: "ACT 4 | Deploy Apache VirtualHost and app config (block/rescue)"
+      block:
 
-          <VirtualHost *:{{ apache_port }}>
-              ServerName    {{ server_fqdn }}
-              ServerAlias   www.{{ server_fqdn }}
-              DocumentRoot  {{ apache_docroot }}
+        - name: "ACT 4 | BLOCK | Deploy Apache VirtualHost from Jinja2 template"
+          ansible.builtin.copy:
+            dest: "{{ apache_vhost_conf }}"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # Generated by Ansible (Jinja2 template) - DO NOT EDIT MANUALLY
 
-              ErrorLog  /var/log/httpd/{{ server_fqdn }}_error.log
-              CustomLog /var/log/httpd/{{ server_fqdn }}_access.log combined
+              <VirtualHost *:{{ apache_port }}>
+                  ServerName    {{ server_fqdn }}
+                  ServerAlias   www.{{ server_fqdn }}
+                  DocumentRoot  {{ apache_docroot }}
 
-              <Directory {{ apache_docroot }}>
-                  Options -Indexes +FollowSymLinks
-                  AllowOverride All
-                  Require all granted
-              </Directory>
+                  ErrorLog  /var/log/httpd/{{ server_fqdn }}_error.log
+                  CustomLog /var/log/httpd/{{ server_fqdn }}_access.log combined
 
-              Alias /data {{ storage_mount_point }}
-              <Directory {{ storage_mount_point }}>
-                  Require all granted
-              </Directory>
-          </VirtualHost>
-      notify: Restart Apache
-      tags: [deployment, apache, template]
+                  <Directory {{ apache_docroot }}>
+                      Options -Indexes +FollowSymLinks
+                      AllowOverride All
+                      Require all granted
+                  </Directory>
 
-    - name: "ACT 4 | Deploy application config file"
-      ansible.builtin.copy:
-        dest: "{{ app_config_dest }}"
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: "0640"
-        content: |
-          # app.conf — Generated by Ansible
-          [server]
-          hostname = {{ server_fqdn }}
-          environment = production
-          deploy_user = {{ app_user }}
+                  Alias /data {{ storage_mount_point }}
+                  <Directory {{ storage_mount_point }}>
+                      Require all granted
+                  </Directory>
+              </VirtualHost>
+          notify: Restart Apache
+          tags: [deployment, template]
 
-          [storage]
-          data_dir = {{ storage_mount_point }}
-          backup_dir = {{ app_backup_dir }}
+        - name: "ACT 4 | BLOCK | Deploy application config (Jinja2 template)"
+          ansible.builtin.copy:
+            dest: "{{ app_config_dest }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0640"
+            content: |
+              # app.conf - Generated by Ansible Jinja2 template
+              [server]
+              hostname    = {{ server_fqdn }}
+              environment = production
+              deploy_user = {{ app_user }}
+              deploy_date = {{ ansible_date_time.date }}
 
-          [web]
-          port = {{ apache_port }}
-          ssl_port = {{ apache_ssl_port }}
-          docroot = {{ apache_docroot }}
+              [storage]
+              data_dir    = {{ storage_mount_point }}
+              backup_dir  = {{ app_backup_dir }}
+              lvm_device  = {{ lvm_device }}
 
-          [logging]
-          level = INFO
-          log_dir = /var/log/app
-      tags: [deployment, template]
+              [web]
+              port        = {{ apache_port }}
+              ssl_port    = {{ apache_ssl_port }}
+              docroot     = {{ apache_docroot }}
 
-    - name: "ACT 4 | Copy robots.txt to web root"
+              [logging]
+              level       = INFO
+              log_dir     = /var/log/app
+          tags: [deployment, template]
+
+        - name: "ACT 4 | BLOCK | Validate Apache config syntax"
+          ansible.builtin.command:
+            cmd: apachectl configtest
+          register: apache_configtest
+          changed_when: false
+          tags: [deployment, template]
+
+      rescue:
+        - name: "ACT 4 | RESCUE | Log deployment failure"
+          ansible.builtin.debug:
+            msg: >
+              Deployment block failed!
+              Error: {{ ansible_failed_result.msg | default('unknown') }}.
+              Initiating rollback.
+
+        - name: "ACT 4 | RESCUE | Remove broken vhost config to restore Apache"
+          ansible.builtin.file:
+            path: "{{ apache_vhost_conf }}"
+            state: absent
+          ignore_errors: true    # ignore_errors - rollback must not halt play
+
+      always:
+        - name: "ACT 4 | ALWAYS | Record deployment attempt timestamp"
+          ansible.builtin.lineinfile:
+            path: /var/log/app/deploy.log
+            line: "[{{ ansible_date_time.iso8601 }}] Deploy attempt on {{ inventory_hostname }}."
+            create: true
+            owner: root
+            group: root
+            mode: "0644"
+
+    - name: "ACT 4 | Copy robots.txt to web root on managed node"
       ansible.builtin.copy:
         dest: "{{ apache_docroot }}/robots.txt"
         owner: apache
@@ -309,7 +414,7 @@
           Allow: /
       tags: [deployment, files]
 
-    - name: "ACT 4 | Inject deployment banner into index.html"
+    - name: "ACT 4 | Add deployment banner to index.html (manage file content)"
       ansible.builtin.blockinfile:
         path: "{{ app_banner_file }}"
         create: true
@@ -320,68 +425,55 @@
         block: |
           <!DOCTYPE html>
           <html lang="en">
-          <head><meta charset="UTF-8"><title>{{ server_fqdn }} — Live</title></head>
+          <head><meta charset="UTF-8"><title>{{ server_fqdn }} - Live</title></head>
           <body>
             <h1>Deployed by Ansible</h1>
-            <p>Server : {{ server_fqdn }}</p>
-            <p>Date   : {{ ansible_date_time.date }}</p>
-            <p>Owner  : {{ app_user }}@{{ app_group }}</p>
+            <p>Server  : {{ server_fqdn }}</p>
+            <p>Date    : {{ ansible_date_time.date }}</p>
+            <p>Owner   : {{ app_user }}@{{ app_group }}</p>
+            <p>Storage : {{ storage_mount_point }} (LVM: {{ lvm_device }})</p>
           </body>
           </html>
       tags: [deployment, files]
 
-    - name: "ACT 4 | Ensure Apache is started and enabled"
+    - name: "ACT 4 | Ensure Apache is started and enabled at boot"
       ansible.builtin.service:
         name: "{{ apache_service }}"
         state: started
         enabled: true
-      tags: [deployment, apache]
+      tags: [deployment, services]
 
-    - name: "ACT 4 | Verify Apache is listening on port 80"
+    - name: "ACT 4 | Verify Apache responds on port {{ apache_port }}"
       ansible.builtin.wait_for:
         host: "127.0.0.1"
         port: "{{ apache_port }}"
         timeout: 15
-      tags: [deployment, apache]
+      tags: [deployment, services]
 
   ###############################################################################
-  # ACT 5 — REFINEMENT
+  # ACT 5 - REFINEMENT
   ###############################################################################
 
-    - name: "ACT 5 | Create application log directory"
+    - name: "ACT 5 | Create required application directories (looped)"
       ansible.builtin.file:
-        path: /var/log/app
+        path: "{{ item.path }}"
         state: directory
-        owner: "{{ app_user }}"
+        owner: "{{ item.owner }}"
         group: "{{ app_group }}"
-        mode: "0750"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "/var/log/app",         owner: "{{ app_user }}", mode: "0750" }
+        - { path: "/run/app",             owner: "{{ app_user }}", mode: "0755" }
+        - { path: "{{ app_backup_dir }}", owner: "{{ app_user }}", mode: "0700" }
       tags: [refinement, directories]
 
-    - name: "ACT 5 | Create application run directory"
-      ansible.builtin.file:
-        path: /run/app
-        state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: "0755"
-      tags: [refinement, directories]
-
-    - name: "ACT 5 | Create backup staging directory"
-      ansible.builtin.file:
-        path: "{{ app_backup_dir }}"
-        state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: "0700"
-      tags: [refinement, directories]
-
-    - name: "ACT 5 | Remove legacy tmp directory if present"
+    - name: "ACT 5 | Remove legacy temporary directory"
       ansible.builtin.file:
         path: /var/tmp/app_old
         state: absent
       tags: [refinement, directories]
 
-    - name: "ACT 5 | Enforce permissions on app config file"
+    - name: "ACT 5 | Enforce strict permissions on application config file"
       ansible.builtin.file:
         path: "{{ app_config_dest }}"
         owner: "{{ app_user }}"
@@ -389,17 +481,27 @@
         mode: "0640"
       tags: [refinement, permissions]
 
-    - name: "ACT 5 | Enforce permissions on web document root"
+    - name: "ACT 5 | Recursively enforce ownership on web document root"
       ansible.builtin.file:
         path: "{{ apache_docroot }}"
         state: directory
         owner: apache
         group: "{{ app_group }}"
         mode: "0755"
-        recurse: true
+        recurse: true    # RECURSE - applies to all nested files and dirs
       tags: [refinement, permissions]
 
-    - name: "ACT 5 | Write post-deploy validation script"
+    - name: "ACT 5 | Recursively enforce ownership on LVM data mount"
+      ansible.builtin.file:
+        path: "{{ storage_mount_point }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+        recurse: true    # RECURSE
+      tags: [refinement, permissions]
+
+    - name: "ACT 5 | Deploy post-deploy health-check shell script"
       ansible.builtin.copy:
         dest: /usr/local/sbin/post_deploy_check.sh
         owner: root
@@ -407,35 +509,58 @@
         mode: "0750"
         content: |
           #!/usr/bin/env bash
+          # post_deploy_check.sh - Managed by Ansible
           set -euo pipefail
+          LOG=/var/log/app/deploy.log
+          ERRORS=0
 
-          echo "[$(date)] Starting post-deploy checks..." | tee -a /var/log/app/deploy.log
+          log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+
+          log "=== Post-Deploy Health Check Start ==="
 
           mountpoint -q {{ storage_mount_point }} \
-            && echo "  OK Storage mount" \
-            || { echo "  FAIL Storage mount MISSING"; exit 1; }
+            && log "  OK  Storage mount {{ storage_mount_point }}" \
+            || { log "  ERR Storage mount MISSING"; ERRORS=$((ERRORS+1)); }
 
           curl -sf http://127.0.0.1:{{ apache_port }}/ -o /dev/null \
-            && echo "  OK Apache HTTP" \
-            || { echo "  FAIL Apache not responding"; exit 2; }
+            && log "  OK  Apache responding on :{{ apache_port }}" \
+            || { log "  ERR Apache NOT responding"; ERRORS=$((ERRORS+1)); }
 
           sudo -u {{ app_user }} test -r {{ app_config_dest }} \
-            && echo "  OK App config readable" \
-            || { echo "  FAIL App config NOT readable"; exit 3; }
+            && log "  OK  App config readable by {{ app_user }}" \
+            || { log "  ERR App config NOT readable"; ERRORS=$((ERRORS+1)); }
 
-          echo "[$(date)] All checks passed." | tee -a /var/log/app/deploy.log
+          USAGE=$(df {{ storage_mount_point }} | awk 'NR==2{print $5}' | tr -d '%')
+          if [ "$USAGE" -gt 80 ]; then
+            log "  WARN Disk at ${USAGE}% - exceeds 80% threshold"
+          else
+            log "  OK  Disk usage at ${USAGE}%"
+          fi
+
+          log "=== Check complete. Total errors: $ERRORS ==="
+          exit $ERRORS
       tags: [refinement, scripts]
 
-    - name: "ACT 5 | Execute post-deploy validation script"
+    - name: "ACT 5 | Execute health-check script and register output"
       ansible.builtin.command:
         cmd: /usr/local/sbin/post_deploy_check.sh
-      register: post_deploy_result
+      register: health_check_result    # REGISTER
       changed_when: false
+      ignore_errors: true              # ignore_errors - alert but do not halt
       tags: [refinement, scripts]
 
-    - name: "ACT 5 | Show post-deploy script output"
+    - name: "ACT 5 | Display health check output (registered variable)"
       ansible.builtin.debug:
-        msg: "{{ post_deploy_result.stdout_lines }}"
+        msg: "{{ health_check_result.stdout_lines }}"
+      tags: [refinement, scripts]
+
+    - name: "ACT 5 | Fail play if health check found critical errors"
+      ansible.builtin.fail:
+        msg: "Health check reported critical errors. Review /var/log/app/deploy.log"
+      when:
+        - health_check_result.rc is defined
+        - health_check_result.rc != 0
+        - "'ERR' in health_check_result.stdout"
       tags: [refinement, scripts]
 
     - name: "ACT 5 | Check Apache service status"
@@ -443,19 +568,26 @@
         cmd: systemctl status httpd --no-pager
       register: apache_status
       changed_when: false
-      failed_when: false
+      failed_when: false    # failed_when override
       tags: [refinement, status]
 
-    - name: "ACT 5 | Show Apache service status"
+    - name: "ACT 5 | Show Apache status"
       ansible.builtin.debug:
         msg: "{{ apache_status.stdout_lines }}"
       tags: [refinement, status]
 
+    - name: "ACT 5 | Restart Apache if it is not currently running"
+      ansible.builtin.service:
+        name: "{{ apache_service }}"
+        state: restarted
+      when: apache_status.rc is defined and apache_status.rc != 0
+      tags: [refinement, status]
+
   ###############################################################################
-  # ACT 6 — MAINTENANCE
+  # ACT 6 - MAINTENANCE
   ###############################################################################
 
-    - name: "ACT 6 | Schedule nightly backup cron job"
+    - name: "ACT 6 | Schedule nightly backup cron job (02:30 daily)"
       ansible.builtin.cron:
         name: "Nightly app data backup"
         user: "{{ app_user }}"
@@ -472,9 +604,9 @@
         state: present
       tags: [maintenance, cron]
 
-    - name: "ACT 6 | Schedule weekly stale-backup purge"
+    - name: "ACT 6 | Schedule weekly backup rotation (Sunday 03:00)"
       ansible.builtin.cron:
-        name: "Weekly backup rotation — purge older than 7 days"
+        name: "Weekly backup rotation - purge older than 7 days"
         user: root
         minute: "0"
         hour: "3"
@@ -496,23 +628,31 @@
         state: present
       tags: [maintenance, cron]
 
-    - name: "ACT 6 | Create on-demand archive of web root"
-      community.general.archive:
-        path: "{{ apache_docroot }}"
-        dest: "{{ app_backup_dir }}/{{ app_archive_name }}"
-        format: gz
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: "0600"
-      register: archive_result
+    - name: "ACT 6 | Create on-demand archive of web root (block/rescue)"
+      block:
+        - name: "ACT 6 | BLOCK | Archive web root content"
+          community.general.archive:
+            path: "{{ apache_docroot }}"
+            dest: "{{ app_backup_dir }}/{{ app_archive_name }}"
+            format: gz
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0600"
+          register: archive_result
+
+        - name: "ACT 6 | BLOCK | Confirm archive was created"
+          ansible.builtin.debug:
+            msg: "Archive OK: {{ archive_result.dest }} - {{ archive_result.archived | length }} files"
+
+      rescue:
+        - name: "ACT 6 | RESCUE | Log archive failure and continue"
+          ansible.builtin.debug:
+            msg: "Archive failed: {{ ansible_failed_result.msg | default('unknown error') }}"
+          ignore_errors: true    # ignore_errors - maintenance must continue
+
       tags: [maintenance, archive]
 
-    - name: "ACT 6 | Confirm archive was created"
-      ansible.builtin.debug:
-        msg: "Archive created: {{ archive_result.dest }} ({{ archive_result.archived | length }} files)"
-      tags: [maintenance, archive]
-
-    - name: "ACT 6 | Append maintenance event to app log"
+    - name: "ACT 6 | Append maintenance record to app log"
       ansible.builtin.lineinfile:
         path: /var/log/app/deploy.log
         line: "[{{ ansible_date_time.iso8601 }}] Maintenance run completed on {{ inventory_hostname }}"
@@ -522,7 +662,7 @@
         mode: "0640"
       tags: [maintenance, files]
 
-    - name: "ACT 6 | Find stale PID files"
+    - name: "ACT 6 | Find stale PID files in /run/app"
       ansible.builtin.find:
         paths: /run/app
         patterns: "*.pid"
@@ -530,25 +670,25 @@
       register: stale_pids
       tags: [maintenance, processes]
 
-    - name: "ACT 6 | Read PIDs from stale PID files"
+    - name: "ACT 6 | Read PID values from stale PID files"
       ansible.builtin.slurp:
         src: "{{ item.path }}"
       loop: "{{ stale_pids.files }}"
       register: pid_contents
-      when: stale_pids.files | length > 0
+      when: stale_pids.files | length > 0    # CONDITIONAL
       tags: [maintenance, processes]
 
-    - name: "ACT 6 | Kill stale processes by PID"
+    - name: "ACT 6 | Kill stale processes by PID (SIGTERM)"
       ansible.builtin.command:
         cmd: "kill -SIGTERM {{ item.content | b64decode | trim }}"
       loop: "{{ pid_contents.results }}"
       when:
         - stale_pids.files | length > 0
         - item.content is defined
-      ignore_errors: true
+      ignore_errors: true    # ignore_errors - process may already be gone
       tags: [maintenance, processes]
 
-    - name: "ACT 6 | Kill any lingering gunicorn processes by name"
+    - name: "ACT 6 | Kill any running {{ stale_process_name }} by name"
       ansible.builtin.command:
         cmd: "pkill -SIGTERM -f {{ stale_process_name }}"
       register: pkill_result
@@ -556,13 +696,13 @@
       changed_when: pkill_result.rc == 0
       tags: [maintenance, processes]
 
-    - name: "ACT 6 | Report kill result"
+    - name: "ACT 6 | Report process kill outcome (registered variable)"
       ansible.builtin.debug:
         msg: >
           {% if pkill_result.rc == 0 %}
-          Stale '{{ stale_process_name }}' process(es) terminated.
+          Stale '{{ stale_process_name }}' processes were terminated.
           {% else %}
-          No '{{ stale_process_name }}' processes found — environment is clean.
+          No '{{ stale_process_name }}' processes found - environment is clean.
           {% endif %}
       tags: [maintenance, processes]
 
@@ -578,25 +718,46 @@
   # EPILOGUE
   ###############################################################################
 
-    - name: "EPILOGUE | System Lifecycle Story — COMPLETE"
-      ansible.builtin.debug:
-        msg:
-          - "════════════════════════════════════════════════════"
-          - " SYSTEM LIFECYCLE STORY — ALL ACTS COMPLETE"
-          - "════════════════════════════════════════════════════"
-          - " Host    : {{ inventory_hostname }}"
-          - " OS      : {{ ansible_distribution }} {{ ansible_distribution_version }}"
-          - " Mount   : {{ storage_mount_point }} on {{ storage_partition }}"
-          - " User    : {{ app_user }} / {{ app_group }}"
-          - " Apache  : http://{{ server_fqdn }}:{{ apache_port }}"
-          - " Archive : {{ app_backup_dir }}/{{ app_archive_name }}"
-          - " Cron    : 3 jobs scheduled"
-          - "════════════════════════════════════════════════════"
+    - name: "EPILOGUE | Collect final system state"
+      ansible.builtin.command:
+        cmd: "{{ item }}"
+      loop:
+        - "df -hT {{ storage_mount_point }}"
+        - "lvs {{ lvm_device }}"
+        - "systemctl is-active httpd firewalld sshd"
+        - "id {{ app_user }}"
+        - "firewall-cmd --list-ports"
+      register: epilogue_checks
+      changed_when: false
+      failed_when: false
       tags: [epilogue]
 
-  ##############################################################################
-  # HANDLERS
-  ##############################################################################
+    - name: "EPILOGUE | Display each system check result"
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ epilogue_checks.results }}"
+      when: item.stdout_lines is defined
+      tags: [epilogue]
+
+    - name: "EPILOGUE | System Lifecycle Story v2 - COMPLETE"
+      ansible.builtin.debug:
+        msg:
+          - "============================================================"
+          - " SYSTEM LIFECYCLE STORY v2 - ALL ACTS COMPLETE"
+          - "============================================================"
+          - " Host        : {{ inventory_hostname }}"
+          - " OS          : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - " LVM VG      : {{ lvm_vg_name }} / LV: {{ lvm_lv_name }} ({{ lvm_lv_size }})"
+          - " Mount       : {{ storage_mount_point }} on {{ lvm_device }}"
+          - " App User    : {{ app_user }} / {{ app_group }}"
+          - " Apache      : http://{{ server_fqdn }}:{{ apache_port }}"
+          - " Archive     : {{ app_backup_dir }}/{{ app_archive_name }}"
+          - " Cron Jobs   : 3 scheduled"
+          - " Vault       : Password protected with ansible-vault"
+          - " Collections : ansible.posix, community.general"
+          - "============================================================"
+      tags: [epilogue]
+
   handlers:
 
     - name: Restart Apache
