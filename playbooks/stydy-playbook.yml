@@ -1,0 +1,932 @@
+---
+# =============================================================================
+# PLAY 1: GATHERING FACTS AND USING VARIABLES
+# =============================================================================
+# CONCEPT: Ansible facts, variables, debug module, register
+# WHY: Facts are the foundation of dynamic playbooks. Understanding how to
+#      gather, store, and display system information is essential.
+# =============================================================================
+- name: "Play 1 — Facts, Variables, and Debug Output"
+  hosts: all
+  gather_facts: true    # Enabled by default; collects system info automatically
+  tags: [basics, facts]
+
+  # CONCEPT: Play-level variables
+  # These are available to all tasks in this play
+  vars:
+    app_name: "study-app"
+    app_version: "1.0.0"
+
+  tasks:
+    # CONCEPT: debug module — display information during playbook runs
+    - name: "1.1 Display basic system facts"
+      debug:
+        msg: |
+          Hostname: {{ ansible_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Architecture: {{ ansible_architecture }}
+          Total Memory: {{ ansible_memtotal_mb }} MB
+          Default IP: {{ ansible_default_ipv4.address }}
+
+    # CONCEPT: register — capture command output into a variable
+    - name: "1.2 Capture kernel version"
+      command: uname -r
+      register: kernel_info
+      changed_when: false   # This command doesn't change anything
+
+    - name: "1.3 Display registered variable"
+      debug:
+        msg: "Kernel version is {{ kernel_info.stdout }}"
+
+    # CONCEPT: shell module — run shell commands (supports pipes, redirects)
+    - name: "1.4 Check disk usage with shell module"
+      shell: df -h / | tail -1 | awk '{print $5}'
+      register: disk_usage
+      changed_when: false
+
+    - name: "1.5 Display disk usage"
+      debug:
+        msg: "Root partition usage: {{ disk_usage.stdout }}"
+
+
+# =============================================================================
+# PLAY 2: CONDITIONALS AND CONTROL FLOW
+# =============================================================================
+# CONCEPT: when, stat module, conditional execution, failed_when
+# WHY: Real-world playbooks need to make decisions based on system state.
+#      Conditionals let you run tasks only when specific criteria are met.
+# =============================================================================
+- name: "Play 2 — Conditionals and Decision Making"
+  hosts: all
+  become: true
+  tags: [conditionals]
+
+  tasks:
+    # CONCEPT: when — run task only if condition is true
+    - name: "2.1 Run task only on CentOS/RHEL systems"
+      debug:
+        msg: "This is a RedHat-family system"
+      when: ansible_os_family == "RedHat"
+
+    # CONCEPT: when with facts — memory-based conditional
+    - name: "2.2 Check if system has enough memory for heavy workload"
+      debug:
+        msg: "System has {{ ansible_memtotal_mb }}MB RAM — sufficient for heavy workload"
+      when: ansible_memtotal_mb > 4096
+
+    # CONCEPT: stat module — check file/directory existence
+    - name: "2.3 Check if /var/app directory exists"
+      stat:
+        path: /var/app
+      register: app_dir
+
+    - name: "2.4 Create /var/app only if it doesn't exist"
+      file:
+        path: /var/app
+        state: directory
+        mode: '0755'
+      when: not app_dir.stat.exists
+
+    # CONCEPT: Checking service status before acting
+    - name: "2.5 Check if firewalld is running"
+      command: systemctl is-active firewalld
+      register: firewalld_status
+      failed_when: false      # Don't fail if service isn't running
+      changed_when: false
+
+    - name: "2.6 Report firewalld status"
+      debug:
+        msg: "firewalld is {{ 'running' if firewalld_status.rc == 0 else 'not running' }}"
+
+    # CONCEPT: Disk usage conditional
+    - name: "2.7 Get disk usage percentage"
+      shell: df / --output=pcent | tail -1 | tr -d ' %'
+      register: disk_pct
+      changed_when: false
+
+    - name: "2.8 Warn if disk usage exceeds 80%"
+      debug:
+        msg: "WARNING: Disk usage is {{ disk_pct.stdout }}% on {{ ansible_hostname }}"
+      when: disk_pct.stdout | int > 80
+
+
+# =============================================================================
+# PLAY 3: PACKAGE MANAGEMENT AND REPOSITORIES
+# =============================================================================
+# CONCEPT: package module, yum/apt, yum_repository, loops
+# WHY: Installing and managing software is one of the most common Ansible tasks.
+# =============================================================================
+- name: "Play 3 — Package Management"
+  hosts: all
+  become: true
+  tags: [packages]
+
+  tasks:
+    # CONCEPT: package module — distribution-agnostic package management
+    - name: "3.1 Install essential packages using a loop"
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - vim
+        - curl
+        - wget
+        - tree
+
+    # CONCEPT: Installing multiple packages as a list (more efficient)
+    - name: "3.2 Install packages as a list (no loop needed)"
+      package:
+        name:
+          - rsync
+          - tar
+          - gzip
+        state: present
+
+    # CONCEPT: yum_repository — manage package repositories
+    - name: "3.3 Add EPEL repository (RHEL/CentOS only)"
+      yum_repository:
+        name: epel
+        description: "Extra Packages for Enterprise Linux"
+        baseurl: "https://download.fedoraproject.org/pub/epel/{{ ansible_distribution_major_version }}/$basearch/"
+        gpgcheck: true
+        enabled: true
+      when: ansible_os_family == "RedHat"
+
+    # CONCEPT: System update with exclusions
+    - name: "3.4 Update all packages except kernel"
+      yum:
+        name: "*"
+        state: latest
+        exclude: kernel*
+      when: ansible_os_family == "RedHat"
+
+
+# =============================================================================
+# PLAY 4: USER AND GROUP MANAGEMENT
+# =============================================================================
+# CONCEPT: user module, group module, authorized_key, sudoers, loops
+# WHY: User management is critical for access control and security compliance.
+# =============================================================================
+- name: "Play 4 — User and Group Management"
+  hosts: all
+  become: true
+  tags: [users]
+
+  vars:
+    # CONCEPT: Defining structured data for loops
+    app_users:
+      - { name: "developer1", groups: "developers", shell: "/bin/bash" }
+      - { name: "developer2", groups: "developers", shell: "/bin/bash" }
+      - { name: "deployer",   groups: "operations,wheel", shell: "/bin/bash" }
+
+  tasks:
+    # CONCEPT: group module — create groups
+    - name: "4.1 Create application groups"
+      group:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - developers
+        - operations
+
+    # CONCEPT: user module with loop — create multiple users
+    - name: "4.2 Create users with specific groups"
+      user:
+        name: "{{ item.name }}"
+        groups: "{{ item.groups }}"
+        shell: "{{ item.shell }}"
+        create_home: true
+        append: true
+      loop: "{{ app_users }}"
+
+    # CONCEPT: Create user with specific UID/GID
+    - name: "4.3 Create devops user with specific UID"
+      user:
+        name: devops
+        uid: 2000
+        group: operations
+        home: /home/devops
+        shell: /bin/bash
+        create_home: true
+
+    # CONCEPT: lineinfile + sudoers — grant passwordless sudo
+    # Always use validate to prevent breaking sudoers
+    - name: "4.4 Grant sudo to operations group"
+      lineinfile:
+        path: /etc/sudoers.d/operations
+        line: "%operations ALL=(ALL) NOPASSWD: ALL"
+        create: true
+        validate: "visudo -cf %s"
+        mode: '0440'
+
+
+# =============================================================================
+# PLAY 5: FILE MANAGEMENT AND TEXT MANIPULATION
+# =============================================================================
+# CONCEPT: copy, file, blockinfile, replace, template, stat
+# WHY: Managing configuration files is a core Ansible use case.
+# =============================================================================
+- name: "Play 5 — File Management"
+  hosts: all
+  become: true
+  tags: [files]
+
+  tasks:
+    # CONCEPT: file module — create directories
+    - name: "5.1 Create application directories"
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /opt/myapp
+        - /opt/myapp/config
+        - /opt/myapp/logs
+
+    # CONCEPT: copy module — deploy files from control node
+    - name: "5.2 Deploy a static configuration file"
+      copy:
+        content: |
+          # Application Configuration
+          app_name=study-app
+          log_level=info
+          max_connections=100
+        dest: /opt/myapp/config/app.conf
+        mode: '0644'
+
+    # CONCEPT: blockinfile — manage a block of text within a file
+    # The marker comments let Ansible find and update the block later
+    - name: "5.3 Add managed block to configuration"
+      blockinfile:
+        path: /opt/myapp/config/app.conf
+        marker: "# {mark} ANSIBLE MANAGED - DATABASE SETTINGS"
+        block: |
+          db_host=localhost
+          db_port=3306
+          db_name=appdb
+
+    # CONCEPT: replace module — find and replace text patterns
+    - name: "5.4 Update a specific setting using replace"
+      replace:
+        path: /opt/myapp/config/app.conf
+        regexp: '^max_connections=\d+'
+        replace: 'max_connections=200'
+
+    # CONCEPT: stat module — check file properties
+    - name: "5.5 Check if config file exists and get details"
+      stat:
+        path: /opt/myapp/config/app.conf
+      register: config_stat
+
+    - name: "5.6 Display file info"
+      debug:
+        msg: "Config file size: {{ config_stat.stat.size }} bytes, mode: {{ config_stat.stat.mode }}"
+      when: config_stat.stat.exists
+# =============================================================================
+# PLAY 6: TEMPLATES AND JINJA2
+# =============================================================================
+# CONCEPT: template module, Jinja2 syntax, variables in templates
+# WHY: Templates let you generate dynamic configuration files customized
+#      per host, per environment, or per any variable you define.
+# NOTE: In practice, .j2 files live in a templates/ directory. Here we use
+#       copy with content to keep everything in one file for study purposes.
+# =============================================================================
+- name: "Play 6 — Templates and Jinja2"
+  hosts: all
+  become: true
+  tags: [templates]
+
+  vars:
+    http_port: 80
+    server_admin: "admin@example.com"
+    document_root: "/var/www/html"
+
+  tasks:
+    # CONCEPT: Using template module with inline content (for demonstration)
+    # In real playbooks, use: template: src=templates/vhost.conf.j2 dest=...
+    - name: "6.1 Generate a virtual host config (simulated template)"
+      copy:
+        content: |
+          # Generated by Ansible on {{ ansible_hostname }}
+          # IP: {{ ansible_default_ipv4.address }}
+          <VirtualHost *:{{ http_port }}>
+              ServerAdmin {{ server_admin }}
+              DocumentRoot {{ document_root }}
+              ServerName {{ ansible_fqdn }}
+          </VirtualHost>
+        dest: /opt/myapp/config/vhost.conf
+        mode: '0644'
+
+    # CONCEPT: Template with loop (Jinja2 for loop)
+    - name: "6.2 Generate hosts allow list"
+      copy:
+        content: |
+          # Allowed hosts - Generated by Ansible
+          {% for host in groups['all'] %}
+          {{ hostvars[host].ansible_default_ipv4.address | default('unknown') }}  {{ hostvars[host].ansible_hostname | default('unknown') }}
+          {% endfor %}
+        dest: /opt/myapp/config/allowed_hosts.conf
+        mode: '0644'
+
+
+# =============================================================================
+# PLAY 7: SERVICE MANAGEMENT AND HANDLERS
+# =============================================================================
+# CONCEPT: service module, handlers, notify, systemd overrides
+# WHY: Managing services (start, stop, enable, restart) is fundamental.
+#      Handlers provide efficient "restart only when changed" patterns.
+# =============================================================================
+- name: "Play 7 — Service Management and Handlers"
+  hosts: all
+  become: true
+  tags: [services]
+
+  tasks:
+    # CONCEPT: Ensure a service is running and enabled at boot
+    - name: "7.1 Ensure chronyd (NTP) is running"
+      service:
+        name: chronyd
+        state: started
+        enabled: true
+      ignore_errors: true   # In case chronyd isn't installed in the lab
+
+    # CONCEPT: Stop and disable a service
+    - name: "7.2 Stop and disable a service (example: postfix)"
+      service:
+        name: postfix
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+    # CONCEPT: Deploy config and notify handler to restart
+    - name: "7.3 Deploy a config file that triggers a handler"
+      copy:
+        content: |
+          # Custom sysctl settings
+          net.ipv4.ip_forward = 1
+          vm.swappiness = 10
+        dest: /etc/sysctl.d/99-custom.conf
+        mode: '0644'
+      notify: Apply sysctl settings
+
+    # CONCEPT: systemd override — customize service behavior
+    - name: "7.4 Create systemd override for auto-restart"
+      file:
+        path: /etc/systemd/system/chronyd.service.d
+        state: directory
+
+    - name: "7.5 Add restart-on-failure policy"
+      copy:
+        content: |
+          [Service]
+          Restart=on-failure
+          RestartSec=5
+        dest: /etc/systemd/system/chronyd.service.d/restart.conf
+      notify: Reload systemd daemon
+
+  # CONCEPT: handlers — run only when notified, execute at end of play
+  handlers:
+    - name: Apply sysctl settings
+      command: sysctl --system
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: true
+
+
+# =============================================================================
+# PLAY 8: FIREWALL CONFIGURATION
+# =============================================================================
+# CONCEPT: firewalld module, permanent rules, immediate application
+# WHY: Firewall management is a common security requirement.
+# =============================================================================
+- name: "Play 8 — Firewall Configuration"
+  hosts: all
+  become: true
+  tags: [firewall]
+
+  tasks:
+    - name: "8.1 Ensure firewalld is installed and running"
+      package:
+        name: firewalld
+        state: present
+
+    - name: "8.2 Start firewalld"
+      service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    # CONCEPT: Allow specific services through the firewall
+    - name: "8.3 Allow SSH (should already be allowed)"
+      firewalld:
+        service: ssh
+        permanent: true     # Survives reboot
+        immediate: true     # Apply now without reload
+        state: enabled
+
+    # CONCEPT: Allow a custom port
+    - name: "8.4 Allow custom application port 8080"
+      firewalld:
+        port: 8080/tcp
+        permanent: true
+        immediate: true
+        state: enabled
+
+    # CONCEPT: Allow multiple services using a loop
+    - name: "8.5 Allow HTTP and HTTPS"
+      firewalld:
+        service: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - http
+        - https
+
+
+# =============================================================================
+# PLAY 9: CRON JOBS AND SCHEDULING
+# =============================================================================
+# CONCEPT: cron module, scheduled tasks, backup automation
+# WHY: Automating recurring tasks is essential for system maintenance.
+# =============================================================================
+- name: "Play 9 — Cron Jobs and Scheduling"
+  hosts: all
+  become: true
+  tags: [cron]
+
+  tasks:
+    # CONCEPT: cron module — schedule a recurring task
+    - name: "9.1 Schedule hourly temp file cleanup"
+      cron:
+        name: "Cleanup temp files"
+        minute: "0"
+        job: "find /tmp -type f -mtime +7 -delete > /dev/null 2>&1"
+        user: root
+
+    # CONCEPT: Weekly scheduled task
+    - name: "9.2 Schedule weekly log archive (Sunday 1 AM)"
+      cron:
+        name: "Weekly log archive"
+        minute: "0"
+        hour: "1"
+        weekday: "0"
+        job: "tar czf /backup/logs-$(date +\\%Y\\%m\\%d).tar.gz /var/log/*.log"
+        user: root
+
+    # CONCEPT: Daily backup with cron
+    - name: "9.3 Schedule daily /etc backup"
+      cron:
+        name: "Daily etc backup"
+        minute: "0"
+        hour: "2"
+        job: "tar czf /backup/etc-$(date +\\%Y\\%m\\%d).tar.gz /etc > /dev/null 2>&1"
+        user: root
+
+    # CONCEPT: Create backup directory first
+    - name: "9.4 Ensure backup directory exists"
+      file:
+        path: /backup
+        state: directory
+        mode: '0750'
+
+
+# =============================================================================
+# PLAY 10: STORAGE AND FILESYSTEM MANAGEMENT
+# =============================================================================
+# CONCEPT: filesystem, mount, parted, swap, LVM
+# WHY: Storage management is critical for server provisioning.
+# NOTE: These tasks require actual block devices. In a lab, use loop devices
+#       or virtual disks. Commented out to prevent accidental execution.
+# =============================================================================
+- name: "Play 10 — Storage Concepts (Reference Only)"
+  hosts: all
+  become: true
+  gather_facts: true
+  tags: [storage]
+
+  tasks:
+    # CONCEPT: filesystem module — format a device
+    # Uncomment in a lab with an available device
+    # - name: "10.1 Create XFS filesystem on /dev/sdb"
+    #   filesystem:
+    #     fstype: xfs
+    #     dev: /dev/sdb
+
+    # CONCEPT: mount module — mount and persist in fstab
+    # - name: "10.2 Mount /dev/sdb on /data"
+    #   mount:
+    #     path: /data
+    #     src: /dev/sdb
+    #     fstype: xfs
+    #     state: mounted    # Mounts AND adds to /etc/fstab
+
+    # CONCEPT: Creating a swap file
+    - name: "10.3 Check current swap"
+      command: swapon --show
+      register: swap_info
+      changed_when: false
+
+    - name: "10.4 Display swap info"
+      debug:
+        var: swap_info.stdout_lines
+
+
+# =============================================================================
+# PLAY 11: SSH HARDENING
+# =============================================================================
+# CONCEPT: lineinfile for sshd_config, security hardening, handlers
+# WHY: SSH hardening is a fundamental security requirement.
+# =============================================================================
+- name: "Play 11 — SSH Security Hardening"
+  hosts: all
+  become: true
+  tags: [ssh, security]
+
+  tasks:
+    # CONCEPT: Harden SSH configuration using lineinfile
+    - name: "11.1 Disable root login via SSH"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin no"
+      notify: Restart sshd
+
+    - name: "11.2 Disable password authentication"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+      notify: Restart sshd
+
+    - name: "11.3 Enable public key authentication"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PubkeyAuthentication"
+        line: "PubkeyAuthentication yes"
+      notify: Restart sshd
+
+    # CONCEPT: Deploy an SSH banner for compliance
+    - name: "11.4 Deploy SSH login banner"
+      copy:
+        content: |
+          ************************************************************
+          NOTICE: Authorized users only. All activity is monitored.
+          ************************************************************
+        dest: /etc/ssh/banner
+        mode: '0644'
+
+    - name: "11.5 Enable SSH banner"
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?Banner"
+        line: "Banner /etc/ssh/banner"
+      notify: Restart sshd
+
+  handlers:
+    - name: Restart sshd
+      service:
+        name: sshd
+        state: restarted
+
+
+# =============================================================================
+# PLAY 12: ERROR HANDLING AND RESILIENCE
+# =============================================================================
+# CONCEPT: ignore_errors, retries/delay/until, failed_when, fail module
+# WHY: Production playbooks must handle failures gracefully.
+# =============================================================================
+- name: "Play 12 — Error Handling Patterns"
+  hosts: all
+  tags: [errors]
+
+  tasks:
+    # CONCEPT: ignore_errors — continue even if task fails
+    - name: "12.1 Attempt a task that might fail"
+      command: cat /nonexistent/file
+      register: risky_result
+      ignore_errors: true
+
+    - name: "12.2 Report outcome"
+      debug:
+        msg: "Task {{ 'succeeded' if risky_result.rc == 0 else 'failed (ignored)' }}"
+
+    # CONCEPT: retries + delay + until — retry unreliable tasks
+    - name: "12.3 Retry a connectivity check"
+      command: ping -c 1 127.0.0.1
+      register: ping_result
+      retries: 3
+      delay: 5
+      until: ping_result.rc == 0
+
+    # CONCEPT: failed_when — custom failure conditions
+    - name: "12.4 Run a check with custom failure condition"
+      shell: echo "status OK"
+      register: status_check
+      failed_when: "'CRITICAL' in status_check.stdout"
+
+    # CONCEPT: fail module — explicit failure with custom message
+    - name: "12.5 Validate a prerequisite"
+      fail:
+        msg: "This playbook requires at least 1GB of RAM. Found: {{ ansible_memtotal_mb }}MB"
+      when: ansible_memtotal_mb < 1024
+
+
+# =============================================================================
+# PLAY 13: MONITORING AND ALERTING
+# =============================================================================
+# CONCEPT: Combining shell commands, register, conditionals for monitoring
+# WHY: Ansible can be used for ad-hoc monitoring and health checks.
+# =============================================================================
+- name: "Play 13 — System Monitoring"
+  hosts: all
+  become: true
+  tags: [monitoring]
+
+  tasks:
+    # CONCEPT: Disk monitoring with threshold alerting
+    - name: "13.1 Check disk usage"
+      shell: df / --output=pcent | tail -1 | tr -d ' %'
+      register: disk_pct
+      changed_when: false
+
+    - name: "13.2 Alert on high disk usage"
+      debug:
+        msg: "ALERT: {{ ansible_hostname }} disk usage at {{ disk_pct.stdout }}%"
+      when: disk_pct.stdout | int > 80
+
+    # CONCEPT: Uptime monitoring
+    - name: "13.3 Get system uptime in days"
+      shell: awk '{print int($1/86400)}' /proc/uptime
+      register: uptime_days
+      changed_when: false
+
+    - name: "13.4 Flag systems needing reboot (uptime > 30 days)"
+      debug:
+        msg: "{{ ansible_hostname }} has been up {{ uptime_days.stdout }} days — consider scheduling a reboot"
+      when: uptime_days.stdout | int > 30
+
+    # CONCEPT: I/O monitoring
+    - name: "13.5 Check I/O wait percentage"
+      shell: iostat -c 1 1 | awk '/^ /{print $4}' | tail -1
+      register: iowait
+      changed_when: false
+      ignore_errors: true
+
+    - name: "13.6 Alert on high I/O wait"
+      debug:
+        msg: "HIGH I/O WAIT: {{ iowait.stdout }}% on {{ ansible_hostname }}"
+      when: iowait.stdout is defined and iowait.stdout | float > 20
+
+
+# =============================================================================
+# PLAY 14: CENTRALIZED LOGGING AND AUDITING
+# =============================================================================
+# CONCEPT: rsyslog, auditd, compliance automation
+# WHY: Centralized logging and auditing are compliance requirements.
+# =============================================================================
+- name: "Play 14 — Logging and Auditing"
+  hosts: all
+  become: true
+  tags: [logging, audit]
+
+  vars:
+    log_server: "logserver.example.com"
+
+  tasks:
+    # CONCEPT: Configure rsyslog for centralized logging
+    - name: "14.1 Ensure rsyslog is installed"
+      package:
+        name: rsyslog
+        state: present
+
+    - name: "14.2 Configure log forwarding to central server"
+      lineinfile:
+        path: /etc/rsyslog.conf
+        line: "*.* @@{{ log_server }}:514"
+        state: present
+      notify: Restart rsyslog
+
+    # CONCEPT: auditd — monitor critical file changes
+    - name: "14.3 Ensure auditd is installed"
+      package:
+        name: audit
+        state: present
+
+    - name: "14.4 Add audit rules for critical files"
+      lineinfile:
+        path: /etc/audit/rules.d/critical.rules
+        line: "{{ item }}"
+        create: true
+      loop:
+        - "-w /etc/passwd -p wa -k identity"
+        - "-w /etc/group -p wa -k identity"
+        - "-w /etc/shadow -p wa -k identity"
+        - "-w /etc/sudoers -p wa -k privilege"
+      notify: Restart auditd
+
+    - name: "14.5 Ensure auditd is running"
+      service:
+        name: auditd
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Restart rsyslog
+      service:
+        name: rsyslog
+        state: restarted
+
+    - name: Restart auditd
+      service:
+        name: auditd
+        state: restarted
+
+
+# =============================================================================
+# PLAY 15: LOG ROTATION AND BACKUP AUTOMATION
+# =============================================================================
+# CONCEPT: logrotate, archive, backup strategies
+# WHY: Proper log management and backups prevent disk exhaustion and data loss.
+# =============================================================================
+- name: "Play 15 — Log Rotation and Backups"
+  hosts: all
+  become: true
+  tags: [backups, logrotate]
+
+  tasks:
+    # CONCEPT: Deploy logrotate configuration
+    - name: "15.1 Configure log rotation for application logs"
+      copy:
+        content: |
+          /opt/myapp/logs/*.log {
+              weekly
+              rotate 4
+              compress
+              delaycompress
+              missingok
+              notifempty
+              create 0640 root root
+          }
+        dest: /etc/logrotate.d/myapp
+        mode: '0644'
+
+    # CONCEPT: Backup with archive module
+    - name: "15.2 Create backup directory"
+      file:
+        path: /backup
+        state: directory
+        mode: '0750'
+
+    - name: "15.3 Create compressed backup of /opt/myapp/config"
+      archive:
+        path: /opt/myapp/config
+        dest: "/backup/myapp-config-{{ ansible_date_time.date }}.tar.gz"
+        format: gz
+
+    # CONCEPT: Cleanup old backups
+    - name: "15.4 Schedule cleanup of backups older than 7 days"
+      cron:
+        name: "Cleanup old backups"
+        hour: "3"
+        minute: "30"
+        job: "find /backup -name '*.tar.gz' -mtime +7 -delete"
+
+
+# =============================================================================
+# PLAY 16: ANSIBLE VAULT DEMONSTRATION
+# =============================================================================
+# CONCEPT: Ansible Vault, no_log, sensitive data handling
+# WHY: Secrets management is critical for security.
+# NOTE: In practice, use ansible-vault to encrypt vars files.
+#       This play demonstrates the pattern without actual encrypted files.
+# =============================================================================
+- name: "Play 16 — Secrets Management Pattern (Vault)"
+  hosts: all
+  become: true
+  tags: [vault, secrets]
+
+  vars:
+    # CONCEPT: In production, these would come from an encrypted vars file:
+    #   ansible-vault create vars/secrets.yml
+    #   Then reference with: vars_files: [vars/secrets.yml]
+    db_password: "CHANGE_ME_use_vault_in_production"
+    api_key: "CHANGE_ME_use_vault_in_production"
+
+  tasks:
+    # CONCEPT: no_log prevents sensitive data from appearing in output
+    - name: "16.1 Deploy database config with secrets"
+      copy:
+        content: |
+          [database]
+          host=localhost
+          port=3306
+          password={{ db_password }}
+        dest: /opt/myapp/config/db.conf
+        mode: '0600'
+      no_log: true    # Prevents password from showing in ansible output
+
+    - name: "16.2 Confirm secrets file deployed (without revealing content)"
+      debug:
+        msg: "Database configuration deployed securely"
+
+
+# =============================================================================
+# PLAY 17: ROLES DEMONSTRATION
+# =============================================================================
+# CONCEPT: Ansible roles, include_role, role structure
+# WHY: Roles are the primary way to organize reusable Ansible content.
+# NOTE: This demonstrates the pattern. In practice, roles live in roles/.
+# =============================================================================
+- name: "Play 17 — Role Concepts (Inline Demonstration)"
+  hosts: all
+  become: true
+  tags: [roles]
+
+  tasks:
+    # CONCEPT: What a role's tasks/main.yml would contain
+    # In a real role structure:
+    #   roles/webserver/tasks/main.yml
+    #   roles/webserver/handlers/main.yml
+    #   roles/webserver/templates/
+    #   roles/webserver/defaults/main.yml
+
+    - name: "17.1 [Role: webserver] Install web server"
+      package:
+        name: httpd
+        state: present
+      ignore_errors: true
+
+    - name: "17.2 [Role: webserver] Deploy default page"
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head><title>{{ ansible_hostname }}</title></head>
+          <body><h1>Managed by Ansible</h1></body>
+          </html>
+        dest: /var/www/html/index.html
+        mode: '0644'
+      ignore_errors: true
+
+    # CONCEPT: Role defaults vs role vars
+    # defaults/main.yml — lowest priority, easily overridden
+    # vars/main.yml — higher priority, harder to override
+    - name: "17.3 Demonstrate variable precedence"
+      debug:
+        msg: |
+          Role defaults are overridden by:
+          1. Inventory variables
+          2. Playbook vars
+          3. Role vars (vars/main.yml)
+          4. Extra vars (-e on command line) — highest priority
+
+
+# =============================================================================
+# PLAY 18: MULTI-TIER DEPLOYMENT PATTERN
+# =============================================================================
+# CONCEPT: Play ordering, serial, delegation, multi-tier architecture
+# WHY: Real deployments involve multiple tiers that must be configured in order.
+# =============================================================================
+- name: "Play 18 — Multi-Tier Deployment Summary"
+  hosts: all
+  tags: [multitier]
+
+  tasks:
+    - name: "18.1 Multi-tier deployment pattern explanation"
+      debug:
+        msg: |
+          In a real multi-tier deployment, you would have separate plays:
+
+          Play 1: hosts: db        → Install and configure database
+          Play 2: hosts: app       → Install and configure application
+          Play 3: hosts: web       → Install and configure web server
+          Play 4: hosts: lb        → Install and configure load balancer
+
+          Each play targets a different host group.
+          Plays execute in order, ensuring dependencies are met.
+          Use 'serial: 1' for rolling updates to avoid downtime.
+
+    # CONCEPT: Summary of all concepts covered
+    - name: "18.2 Study playbook complete"
+      debug:
+        msg: |
+          ✓ Facts and Variables (Play 1)
+          ✓ Conditionals (Play 2)
+          ✓ Package Management (Play 3)
+          ✓ User/Group Management (Play 4)
+          ✓ File Management (Play 5)
+          ✓ Templates/Jinja2 (Play 6)
+          ✓ Service Management (Play 7)
+          ✓ Firewall Configuration (Play 8)
+          ✓ Cron Scheduling (Play 9)
+          ✓ Storage Management (Play 10)
+          ✓ SSH Hardening (Play 11)
+          ✓ Error Handling (Play 12)
+          ✓ Monitoring (Play 13)
+          ✓ Logging/Auditing (Play 14)
+          ✓ Backups/Log Rotation (Play 15)
+          ✓ Vault/Secrets (Play 16)
+          ✓ Roles (Play 17)
+          ✓ Multi-Tier Patterns (Play 18)
