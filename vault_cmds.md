@@ -43,14 +43,30 @@ making it easier to manage multiple encrypted files with different passwords in 
 
 -   
 ```
-ansible-vault view -vault-id @prompt external_vault_vars. yaml
+ansible-vault view --vault-id @prompt external_vault_vars. yaml
 ```
 
 -   
 ```
-ansible-vault view —vault-id @password_file external_ vault_vars. yaml
-
-
-
+ansible-vault view -—vault-id @password_file external_ vault_vars. yaml
+```
+#### lable the vault `vars` and prompt to enter the password
+```
+ansible-vault encrypt --vault-id vars@prompt external_vault_vars.yaml
 ```
 
+#### lable the vault `ssh` and prompt to enter the password for a inline variable 
+```
+ansible-vault encrypt_string --vault-id ssh@prompt -name 'ansible_become_pass' 'password'
+```
+
+#### Run playbook and use two vaults password for `vars` and `ssh`
+```
+ ansible-playbook --vault-id vars@prompt -vault-id ssh@prompt vault_playbook.yaml
+```
+
+#### Encrypt Playbook 
+
+```
+ansible-vault encrypt --vault-id playbook@prompt vault_playbook.yaml
+```
