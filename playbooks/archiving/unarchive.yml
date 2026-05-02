@@ -1,0 +1,21 @@
+---
+- hosts: web1
+  tasks:
+    - unarchive:
+        src: ~/local.zip
+        dest: /tmp
+
+
+# Memory Tricks
+# Does it have a FROM? → use src
+#       copy, template, fetch, unarchive all move/render something from somewhere
+
+# "Am I just touching/editing what's already there?" → use path
+#       file, lineinfile, blockinfile, replace, archive all operate on an existing file in place
+
+# archive vs unarchive is the tricky one:
+#       archive → you're pointing at what already exists → path
+#       unarchive → you have an archive to extract from → src
+
+# One-liner to remember:
+#       If it moves something, it has a src. If it stays and changes, it has a path.
