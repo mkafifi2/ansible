@@ -6,3 +6,8 @@
         job: echo “” > /var/log/lastlog
         minute: "0"
         hour: "0"
+    
+    # Delete cronjob
+    - cron:
+        name: "Check Memory"
+        state: absent 
