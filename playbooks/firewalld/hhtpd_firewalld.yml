@@ -1,0 +1,35 @@
+---
+- hosts: web2
+  vars:
+    pkgs:
+      - httpd
+      - firewalld
+  tasks:
+    - package:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ pkgs }}"
+   
+    - service: 
+         name: "{{ item }}"
+         state: started 
+         enabled: true
+      loop: "{{ pkgs }}"
+
+    - firewalld:
+        port: 8082/tcp
+        zone: public
+        permanent: true
+        immediate: true
+        state: enabled
+ 
+    - name: Change Apache port
+      replace:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: '^(Listen)\s+80\s*$'
+        replace: "Listen 8082"
+
+    - name: Restart Apache service
+      service:
+        name: httpd
+        state: restarted
