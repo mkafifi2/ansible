@@ -1,7 +1,0 @@
----
-- hosts: web1
-  tasks:
-    - archive:
-        path: /opt
-        dest: /root/opt.zip
-        format: zip
