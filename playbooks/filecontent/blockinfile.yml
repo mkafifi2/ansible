@@ -1,0 +1,12 @@
+---
+- name: Using blockinfile
+  hosts: web1
+  tasks:
+    - name: Add additional content
+      blockinfile:
+        owner: apache
+        group: apache
+        insertbefore: BOF
+        path: /var/www/html/index.html
+        block: |
+          Hello world
