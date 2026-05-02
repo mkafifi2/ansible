@@ -1,0 +1,19 @@
+---
+- name: Block ports
+  hosts: web1
+  tasks:
+    - name: Block 161/udp
+      firewalld:
+        port: 161/udp
+        zone: block
+        immediate: true
+        permanent: true
+        state: enabled
+    
+    - name: list firewalld blocked ports
+      command: firewall-cmd --list-ports --zone=block
+      register: firewall_output
+  
+    - name: Verify
+      debug:
+        msg: "{{ firewall_output.stdout_lines }}"
