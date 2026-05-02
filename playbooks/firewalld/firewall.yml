@@ -1,0 +1,9 @@
+---
+- name: Instal and enable firewalld
+  hosts: web1
+  tasks:
+    - name: Install firewalld
+      package: name=firewalld state=present
+
+    - name: Enable firewalld
+      service: name=firewalld state=started enabled=true
