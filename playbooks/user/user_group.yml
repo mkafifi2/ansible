@@ -1,0 +1,11 @@
+---
+- hosts: all
+  tasks:
+    - group:
+        name: admin
+        state: present
+
+    - user:
+        name: admin
+        group: admin
+        uid: 2048
