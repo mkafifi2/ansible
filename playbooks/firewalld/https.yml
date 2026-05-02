@@ -1,0 +1,29 @@
+---
+- name: Firewall rules
+  hosts: web1
+  become: true
+  tasks:
+    - name: Add source rule
+      firewalld:
+        source: 172.20.1.2
+        zone: internal
+        immediate: true
+        permanent: true
+        state: enabled
+         
+    - name: Enable https service
+      firewalld:
+        service: https
+        zone: internal
+        immediate: true
+        permanent: true
+        state: enabled
+        
+    - name: Reload firealld
+      command: firewall-cmd --reload
+    
+    - command: firewall-cmd --list-all --zone=internal
+      register: fw_op
+
+    - debug:
+        msg: "{{ fw_op.stdout_lines }}"
