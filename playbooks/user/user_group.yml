@@ -9,3 +9,5 @@
         name: admin
         group: admin
         uid: 2048
+        expires: 1840897608000
+        comment: "Full Name"
