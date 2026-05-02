@@ -10,4 +10,10 @@
     # Delete cronjob
     - cron:
         name: "Check Memory"
-        state: absent 
+        state: absent
+
+    # using secpical time
+    - cron:
+        name: "Clean up tmp"
+        job: "rm -rf /tmp/*"
+        special_time: reboot
